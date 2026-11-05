@@ -1,0 +1,71 @@
+name: Audit missing IMF WEO outcomes
+on:
+  push:
+    branches: [analysis-imf-unmatched]
+
+permissions: read-all
+
+jobs:
+  unmatched:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: any::dplyr, any::arrow, local::.
+      - name: Identify unmatched country-year forecasts
+        shell: Rscript {0}
+        run: |
+          suppressPackageStartupMessages(library(dplyr))
+          weo <- econdatasets::ed_get(
+            "imfweo", "economic_outlook",
+            columns = c("entity_id", "entity_name", "series_id", "year",
+                        "value", "publication_year", "publication_release"),
+            quiet = TRUE
+          )
+          growth <- weo |>
+            filter(series_id == "NGDP_RPCH",
+                   grepl("^[A-Z]{3}$", entity_id),
+                   !is.na(value)) |>
+            mutate(vintage_key = 2L * publication_year +
+                     if_else(publication_release == "Fall", 1L, 0L))
+          latest <- max(growth$vintage_key)
+          actuals <- growth |>
+            filter(vintage_key == latest) |>
+            select(entity_id, year)
+          eligible <- growth |>
+            mutate(horizon = year - publication_year) |>
+            filter(between(horizon, 1, 5),
+                   year <= (latest %/% 2L) - 2)
+          unmatched <- eligible |>
+            anti_join(actuals, by = c("entity_id", "year"))
+          cat("\nAUDIT_LATEST_VINTAGE_KEY: ", latest, "\n")
+          cat("AUDIT_ELIGIBLE_FORECASTS: ", nrow(eligible), "\n")
+          cat("AUDIT_UNMATCHED_FORECASTS: ", nrow(unmatched), "\n")
+          cat("AUDIT_UNMATCHED_COUNTRIES: ", n_distinct(unmatched$entity_id), "\n")
+          cat("\nAUDIT_COUNTRIES_ALPHABETICAL\n")
+          print(
+            unmatched |>
+              distinct(entity_id, entity_name) |>
+              arrange(entity_id) |>
+              head(30),
+            n = 30
+          )
+          cat("\nAUDIT_COUNTRIES_BY_COUNT\n")
+          print(
+            unmatched |>
+              count(entity_id, entity_name, sort = TRUE) |>
+              head(30),
+            n = 30
+          )
+          cat("\nAUDIT_MISSING_COUNTRY_YEAR_EXAMPLES\n")
+          print(
+            unmatched |>
+              distinct(entity_id, entity_name, year) |>
+              arrange(entity_id, year) |>
+              head(35),
+            n = 35
+          )
