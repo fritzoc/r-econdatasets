@@ -9,60 +9,35 @@ jobs:
   unmatched:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: r-lib/actions/setup-r@v2
-        with:
-          use-public-rspm: true
-      - uses: r-lib/actions/setup-r-dependencies@v2
-        with:
-          extra-packages: any::dplyr, any::arrow, local::.
+      - name: Install Python parquet libraries
+        run: python -m pip install pandas pyarrow requests
       - name: Identify unmatched country-year forecasts
-        shell: Rscript {0}
+        shell: bash
         run: |
-          suppressPackageStartupMessages(library(dplyr))
-          weo <- econdatasets::ed_get(
-            "imfweo", "economic_outlook",
-            columns = c("entity_id", "entity_name", "series_id", "year",
-                        "value", "publication_year", "publication_release"),
-            quiet = TRUE
-          )
-          growth <- weo |>
-            filter(series_id == "NGDP_RPCH",
-                   grepl("^[A-Z]{3}$", entity_id),
-                   !is.na(value)) |>
-            mutate(vintage_key = 2L * publication_year +
-                     if_else(publication_release == "Fall", 1L, 0L))
-          latest <- max(growth$vintage_key)
-          actuals <- growth |>
-            filter(vintage_key == latest) |>
-            select(entity_id, year)
-          eligible <- growth |>
-            mutate(horizon = year - publication_year) |>
-            filter(between(horizon, 1, 5),
-                   year <= (latest %/% 2L) - 2)
-          unmatched <- eligible |>
-            anti_join(actuals, by = c("entity_id", "year"))
-          cat("\nAUDIT_LATEST_VINTAGE_KEY: ", latest, "\n")
-          cat("AUDIT_ELIGIBLE_FORECASTS: ", nrow(eligible), "\n")
-          cat("AUDIT_UNMATCHED_FORECASTS: ", nrow(unmatched), "\n")
-          cat("AUDIT_UNMATCHED_COUNTRIES: ", n_distinct(unmatched$entity_id), "\n")
-          cat("\nAUDIT_COUNTRIES_ALPHABETICAL\n")
-          print(
-            unmatched |>
-              distinct(entity_id, entity_name) |>
-              arrange(entity_id) |>
-              head(30)
-          )
-          cat("\nAUDIT_COUNTRIES_BY_COUNT\n")
-          print(
-            unmatched |>
-              count(entity_id, entity_name, sort = TRUE) |>
-              head(30)
-          )
-          cat("\nAUDIT_MISSING_COUNTRY_YEAR_EXAMPLES\n")
-          print(
-            unmatched |>
-              distinct(entity_id, entity_name, year) |>
-              arrange(entity_id, year) |>
-              head(35)
-          )
+          python - <<'PY'
+          import pandas as pd
+          url = "https://huggingface.co/datasets/econdataverse/imfweo/resolve/main/economic_outlook.parquet"
+          columns = ["entity_id", "entity_name", "series_id", "year", "value", "publication_year", "publication_release"]
+          weo = pd.read_parquet(url, columns=columns)
+          mask = ((weo["series_id"] == "NGDP_RPCH") &
+                  weo["entity_id"].str.fullmatch(r"[A-Z]{3}", na=False) &
+                  weo["value"].notna())
+          growth = weo.loc[mask].copy()
+          growth["vintage_key"] = 2 * growth["publication_year"] + growth["publication_release"].eq("Fall").astype(int)
+          latest = growth["vintage_key"].max()
+          actuals = growth.loc[growth["vintage_key"].eq(latest), ["entity_id", "year"]].drop_duplicates()
+          horizon = growth["year"] - growth["publication_year"]
+          eligible = growth.loc[horizon.between(1, 5) & (growth["year"] <= (latest // 2) - 2)].copy()
+          merged = eligible.merge(actuals, on=["entity_id", "year"], how="left", indicator=True)
+          unmatched = merged.loc[merged["_merge"].eq("left_only")]
+          print("AUDIT_LATEST_VINTAGE_KEY", latest, flush=True)
+          print("AUDIT_ELIGIBLE_FORECASTS", len(eligible), flush=True)
+          print("AUDIT_UNMATCHED_FORECASTS", len(unmatched), flush=True)
+          print("AUDIT_UNMATCHED_COUNTRIES", unmatched["entity_id"].nunique(), flush=True)
+          print("AUDIT_COUNTRIES_ALPHABETICAL", flush=True)
+          print(unmatched[["entity_id", "entity_name"]].drop_duplicates().sort_values("entity_id").to_string(index=False), flush=True)
+          print("AUDIT_COUNTRIES_BY_COUNT", flush=True)
+          print(unmatched.groupby(["entity_id", "entity_name"], dropna=False).size().sort_values(ascending=False).to_string(), flush=True)
+          print("AUDIT_MISSING_YEARS", flush=True)
+          print(unmatched[["entity_id", "entity_name", "year"]].drop_duplicates().groupby(["entity_id", "entity_name"])["year"].apply(lambda x: ", ".join(map(str, sorted(x)))).to_string(), flush=True)
+          PY
