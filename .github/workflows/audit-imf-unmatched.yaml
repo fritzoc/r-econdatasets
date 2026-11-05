@@ -51,21 +51,18 @@ jobs:
             unmatched |>
               distinct(entity_id, entity_name) |>
               arrange(entity_id) |>
-              head(30),
-            n = 30
+              head(30)
           )
           cat("\nAUDIT_COUNTRIES_BY_COUNT\n")
           print(
             unmatched |>
               count(entity_id, entity_name, sort = TRUE) |>
-              head(30),
-            n = 30
+              head(30)
           )
           cat("\nAUDIT_MISSING_COUNTRY_YEAR_EXAMPLES\n")
           print(
             unmatched |>
               distinct(entity_id, entity_name, year) |>
               arrange(entity_id, year) |>
-              head(35),
-            n = 35
+              head(35)
           )
